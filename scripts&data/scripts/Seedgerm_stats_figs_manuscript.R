@@ -26,7 +26,7 @@
 #'  Verhoeven, M.R., Bacon, J.A., and D.J. Larkin. Seed traits and germination treatments for dormancy break of four aquatic plant species. Target Journal: Aquatic Botany.
 #' 
 #' To-do:
-#' Analysis re-run with "corrected germination" results
+#' Calculate "corrected germination" results
 #' Table 1 update
 #' clean up libraries
 #' drop the time to germ analysis
@@ -378,10 +378,14 @@
 #'  2. The effect of treatments & traits varied across species, with B Schreberi and N
 #'  variegata looking similar, and both Potamogetons looking similar.
 #'  3. We need to account for the viability in the germination results-- in practice, 
-#'  that means dividing the germ by the viability number.   
+#'  that means dividing the germ by the viability number. We could try a hierarchical model 
+#'  to assign the non-germ variance across both levels, but we really do not have sample sizes 
+#'  for that sorta operation. Instead, let's estimate everything as previously done, then 
+#'  do a post-hoc correction for viability.  
 #'  
 #'  Thus, for each species, we can evaluate these treatment hypotheses using a 
-#'  model for each species of the corrected germination.  
+#'  model for germination. IN our reporting we will use viability to generate
+#'  corrected germination.   
 #'  
 #'  Results for binomial GLMs in the frequentist OLS pumped out odd results. 
 #'  Digging into the seed germ analysis lit suggests that the high occurrence of
@@ -431,7 +435,7 @@
 #' ## Potamogeton natans 
     #Pot nat:
     #model
-    bayes_pnat <- stan_glm(data = germ[Species == "Pot_nat"],  Germ_yn/0.79 ~ gibberellic * scarify + sc_mass + sc_lw, family = binomial(link = 'logit'), set.seed(4913))
+    bayes_pnat <- stan_glm(data = germ[Species == "Pot_nat"],  Germ_yn ~ gibberellic * scarify + sc_mass + sc_lw, family = binomial(link = 'logit'), set.seed(4913))
     #output
     summary(bayes_pnat)
     #visualize results on data scale
@@ -451,7 +455,7 @@
 
 #' ## Potamogeton illinoensis
     #Pot ill
-    bayes_pill <- stan_glm(data = germ[Species == "Pot_ill"], Germ_yn/0.42 ~ gibberellic * scarify + sc_mass + sc_lw  ,  family = binomial(link = 'logit'), set.seed(4913))
+    bayes_pill <- stan_glm(data = germ[Species == "Pot_ill"], Germ_yn ~ gibberellic * scarify + sc_mass + sc_lw  ,  family = binomial(link = 'logit'), set.seed(4913))
     summary(bayes_pill)
     #visualize model results
     plot_model(bayes_pill, title = "Potamogeton illinoensis", colors = "black", transform = NULL)
@@ -510,16 +514,16 @@
 
 
 
-# create Figure 3 ---------------------------------------------------------
+# create Figure 2 ---------------------------------------------------------
 
-#' ## Figure 3    
+#' ## Figure 2    
     
 bayes_germ_ci_tab_master[ , parameter := factor(parameter, levels = c(rev(unique(bayes_germ_ci_tab_master$parameter)))) ,]
 
     bayes_germ_ci_tab_master[ , species := factor(species, levels = c(unique(bayes_germ_ci_tab_master$species))) ,]
     bayes_germ_ci_tab_master[ parameter == "gibberellicTRUE:scarifyTRUE", letter := c(" A", "B") ]
     
-    Figure3 <- ggplot(bayes_germ_ci_tab_master[parameter != "(Intercept)"], aes( parameter, est ))+
+    Figure2 <- ggplot(bayes_germ_ci_tab_master[parameter != "(Intercept)"], aes( parameter, est ))+
         geom_crossbar(aes(ymax = bayes_germ_ci_tab_master[parameter != "(Intercept)"]$'75%',
                           ymin = bayes_germ_ci_tab_master[parameter != "(Intercept)"]$'25%'),
                       fill = "gray", 
@@ -546,10 +550,10 @@ bayes_germ_ci_tab_master[ , parameter := factor(parameter, levels = c(rev(unique
         ylim(c(-13,10))+
         # geom_text(aes(label = letter), vjust = -0.1, hjust = 3, size = 15)+
         coord_flip()
-    Figure3
+    Figure2
     
     # # Customizing the output
-    tiff(filename = "Figure_3.tiff",         # File name
+    tiff(filename = "Figure_2.tiff",         # File name
          width = 7, height = 3.25, units = "in", # Width and height in inches
          # bg = "white",          # Background color
          # colormodel = "cmyk",   # Color model (cmyk is required for most publications)
@@ -561,7 +565,7 @@ bayes_germ_ci_tab_master[ , parameter := factor(parameter, levels = c(rev(unique
     )
 
     # Creating a plot
-    Figure3
+    Figure2
 
     # Closing the graphical device
     dev.off()
@@ -579,95 +583,6 @@ bayes_germ_ci_tab_master[ , parameter := factor(parameter, levels = c(rev(unique
     # launch_shinystan(bayes_pnat)
     # launch_shinystan(bayes_pill)
     # launch_shinystan(bayes_nvar)
-
-# time-to-germ analysis ---------------------------------------------------
-
-#' # Time to Germination
-#'     
-#'  Now we want to do a time-to-event analysis for germination. We have to
-#'  alter our data organization slightly to ensure that we account for all of 
-#'  the seeds that did not germinate, but instead count as "not germ" all the 
-#'  way until the end of the experiment, at which point they were "censored." We
-#'  also have "censored each sprout as we pulled them from the germination tray.
-#'  
-#'  https://www.emilyzabor.com/tutorials/survival_analysis_in_r_tutorial.html
-#'  http://www.sthda.com/english/wiki/cox-proportional-hazards-model
-#'  
-#'  Following McNair et al.2012:
-#' McNair, J. N., Sunkara, A., & Frobish, D. (2012). How to analyse seed germination data using statistical time-to-event analysis: Non-parametric and semi-parametric methods. Seed Science Research, Vol. 22, pp. 77–95. https://doi.org/10.1017/S0960258511000547
-#' 
-
-
-# survival data prep ------------------------------------------------------
-
-    # we need a set of variables like this Surv(time, event)
-    #tag seeds w/o a germ date as censored on the last experiment day--6/15/2020
-    germ[is.na(Date_germinated), Germ_yn] # already labeled as censored (FALSE in germ)
-    
-    germ[ , Date_obs:=Date_germinated]
-    germ[is.na(Date_obs), Date_obs := as.IDate("2020-06-15")]#Give every seed an observation date
-    germ[ , N_day_obs := Date_obs-Date_chamber , ]
-    
-    #Check out the survival object that we made:
-    Surv(germ$N_day_obs, germ$Germ_yn)
-    
-
-# Cox-PH ------------------------------------------------------------------
-
-    # Now a full model with species and treatments in coxPH
-    fit2 <- coxph( Surv(N_day_obs, Germ_yn) ~  gibberellic + scarify  , data = germ[Species %in% c("Pot_ill", "Pot_nat")] )
-    
-    #model summary:
-    summary(fit2)
-    
-        
-        Figure4 <- ggsurvplot_facet(fit2, fun = "event", conf.int = T,
-                         ggtheme = theme_bw(),
-                         data = germ[Species %in% c("Pot_ill", "Pot_nat")],
-                         facet.by = c("Species"),
-                         legend.labs = c("Control","Scarify" ,"Gibberellic Acid" , "Scarify+ \nGibberellic Acid"),
-                         legend = c(.14,.87),
-                         ylab = "Cumulative proportion germinated",
-                         xlab = "Days",
-                         panel.labs = list(Species = c("P. natans", "P. illinoiensis","N. variegata", "B. schreberi" )),
-                         short.panel.labs = T,
-                         panel.labs.font = list(face = "bold.italic"),
-                         palette = "Dark2",
-                         legend.title = "Treatment"
-                         
-        )
-        Figure4
-        
-        # # Customizing the output
-        # tiff(filename = "Figure_4.tiff",         # File name
-        #      width = 7, height = 3.25, units = "in", # Width and height in inches
-        #      # bg = "white",          # Background color
-        #      # colormodel = "cmyk",   # Color model (cmyk is required for most publications)
-        #      # paper = "A4"
-        #      # pointsize = 12,
-        #      # compression = c("none", "rle", "lzw", "jpeg", "zip", "lzw+p", "zip+p"),
-        #      res = 300, family = "", restoreConsole = TRUE,
-        #      type =  "cairo"
-        # )
-        # 
-        # # Creating a plot
-        # Figure4
-        # 
-        # # Closing the graphical device
-        # dev.off()
-    
-
-
-# 
-# 
-#' ## Interpret time-to-event analysis   
-#' 
-#' These methods also fail to provide a way to analyze the germ of the
-#' entire experiment in a holistic way. They provide similar results to the more
-#' "basic" glm approach (ignoring other hypothesized variables), but notably 
-#' they are also estimating for each species x treatment other pars like lag
-#' time, curvature or rate of germ, and total germ. 
-#'     
 
 
 # trait distributions -----------------------------------------------------
@@ -691,14 +606,14 @@ bayes_germ_ci_tab_master[ , parameter := factor(parameter, levels = c(rev(unique
        
        plot_dat[, trait := factor(trait, levels = c("Mass_grams", "lw_ratio", "Major_axis", "Minor_axis")) ]
        
-       plot_dat[trait == "Mass_grams" , trait := "Mass (grams)"]
+       plot_dat[trait == "Mass_grams" , trait := "Mass (g)"]
        plot_dat[trait == "lw_ratio" , trait := "Length/Width Ratio"]
        plot_dat[trait %in% c("Major_axis", "Minor_axis"), value := value/1000]
-       plot_dat[trait == "Major_axis" , trait := "Length (milimeters)"]
-       plot_dat[trait == "Minor_axis" , trait := "Width (milimeters)"]
+       plot_dat[trait == "Major_axis" , trait := "Length (mm)"]
+       plot_dat[trait == "Minor_axis" , trait := "Width (mm)"]
        
 
-    ggplot(plot_dat[], aes(value, Species))+
+    Figure1 <- ggplot(plot_dat[], aes(value, Species))+
         geom_density_ridges(aes( fill =  Species))+
         facet_wrap(~trait, scales = "free" , ncol = 2)+
         theme(axis.text.x = element_text(angle = 45, hjust = 1),
@@ -709,6 +624,29 @@ bayes_germ_ci_tab_master[ , parameter := factor(parameter, levels = c(rev(unique
         ylab("")+
         scale_fill_discrete(position = "top", limits=c("Bra_sch", "Nup_var", "Pot_ill", "Pot_nat" ),
                          labels = c("Brasenia schreberi", "Nuphar variegata", "Potamogeton illinoiensis", "Potamogeton natans"))
+    
+    Figure1
+    
+    # # Customizing the output
+    tiff(filename = "Figure_1.tiff",         # File name
+         width = 6, height = 5, units = "in", # Width and height in inches
+         # bg = "white",          # Background color
+         # colormodel = "cmyk",   # Color model (cmyk is required for most publications)
+         # paper = "A4"
+         # pointsize = 12,
+         compression = c("lzw"),
+         res = 300, family = "", restoreConsole = TRUE,
+         type =  "cairo"
+    )
+    
+    # Creating a plot
+    Figure1
+    
+    # Closing the graphical device
+    dev.off()
+    
+    
+    
     
         
 
